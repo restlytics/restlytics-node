@@ -1,5 +1,5 @@
 {
-  "//": "Self-contained: this SDK is NOT part of the pnpm workspace, so it extends nothing. typeRoots points at the repo-root node_modules where @types/node lives.",
+  "//": "Self-contained: this SDK is NOT part of the pnpm workspace, so it extends nothing. typeRoots lists this repo's own node_modules first (where `npm install` puts @types/node on a standalone checkout / in CI); the monorepo paths are kept as fallbacks and are ignored when absent.",
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",
@@ -7,6 +7,7 @@
     "lib": ["ES2022"],
     "types": ["node"],
     "typeRoots": [
+      "./node_modules/@types",
       "../../node_modules/@types",
       "../../node_modules/.pnpm/node_modules/@types"
     ],
