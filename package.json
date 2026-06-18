@@ -1,0 +1,84 @@
+{
+  "name": "@restlytics/node",
+  "version": "0.1.0",
+  "description": "restlytics tracing SDK for Node.js — Express & NestJS request tracing with pg/mysql2 DB instrumentation, emitting OTLP/JSON.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./express": {
+      "types": "./dist/integrations/express.d.ts",
+      "import": "./dist/integrations/express.js"
+    },
+    "./nest": {
+      "types": "./dist/integrations/nest.d.ts",
+      "import": "./dist/integrations/nest.js"
+    },
+    "./pg": {
+      "types": "./dist/integrations/pg.d.ts",
+      "import": "./dist/integrations/pg.js"
+    },
+    "./mysql2": {
+      "types": "./dist/integrations/mysql2.d.ts",
+      "import": "./dist/integrations/mysql2.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "restlytics",
+    "tracing",
+    "observability",
+    "otlp",
+    "opentelemetry",
+    "apm",
+    "express",
+    "nestjs",
+    "performance"
+  ],
+  "peerDependencies": {
+    "express": ">=4",
+    "@nestjs/common": ">=9",
+    "pg": ">=8",
+    "mysql2": ">=3"
+  },
+  "peerDependenciesMeta": {
+    "express": {
+      "optional": true
+    },
+    "@nestjs/common": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    },
+    "mysql2": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "@types/node": "^22"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

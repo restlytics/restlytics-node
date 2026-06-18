@@ -1,0 +1,15 @@
+# Source & build config — only ./dist ships (see package.json "files").
+src/
+test/
+tsconfig.json
+*.tsbuildinfo
+
+# Dev artifacts
+node_modules/
+coverage/
+.env
+.env.local
+*.log
+.DS_Store
+.gitignore
+.npmignore
