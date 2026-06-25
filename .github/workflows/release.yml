@@ -96,3 +96,26 @@ jobs:
           git tag -a "${TAG}" -m "${TAG}"
           git push origin "${TAG}"
           gh release create "${TAG}" --title "${TAG}" --generate-notes
+
+      # --- Publish to npm (best-effort: skips if NPM_TOKEN is not configured) ---
+      - name: Set up Node
+        if: steps.bump.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish to npm
+        if: steps.bump.outputs.skip != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::warning::NPM_TOKEN not set — skipping npm publish for ${TAG}."
+            exit 0
+          fi
+          npm install --no-audit --no-fund
+          npm run build
+          npm publish --access public
