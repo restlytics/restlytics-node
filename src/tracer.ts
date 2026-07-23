@@ -231,8 +231,11 @@ export class Tracer {
     if (incoming) {
       tid = incoming.traceId;
       parentSpanId = incoming.parentSpanId;
-      // Respect an upstream "not sampled" decision; only re-roll if it was sampled.
-      sampled = incoming.sampled && sampleDecision(tid, this.config.sampleRate);
+      // Honour the upstream flag exactly — the decision belongs to the head of the
+      // trace and is made only once (SPEC §3). Re-rolling it locally would let this
+      // service drop a trace its caller chose to keep, tearing a distributed trace
+      // in half whenever sampleRate < 1.
+      sampled = incoming.sampled;
     } else {
       tid = Ids.traceId();
       parentSpanId = undefined;
