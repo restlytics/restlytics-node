@@ -1,6 +1,6 @@
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { gzip } from 'node:zlib';
+import { gzip, gzipSync } from 'node:zlib';
 import { URL } from 'node:url';
 import type { ExportTraceServiceRequest } from './otlp.js';
 
@@ -30,6 +30,20 @@ export interface TransportDiagnostics {
 }
 
 export type ErrorReporter = (message: string, error?: unknown) => void;
+
+/** A local-only, structured description of a production-shaped trace batch. */
+export interface TelemetryPreview {
+  readonly mode: 'preview';
+  readonly networkRequestMade: false;
+  readonly signal: 'traces';
+  readonly configuredSampleRate: number;
+  readonly sampled: true;
+  readonly spanCount: number;
+  readonly jsonBytes: number;
+  readonly gzipBytes: number;
+  readonly redactionPolicyApplied: readonly string[];
+  readonly payload: ExportTraceServiceRequest;
+}
 
 function report(onError: ErrorReporter | undefined, message: string, error?: unknown): void {
   if (!onError) return;
@@ -235,6 +249,52 @@ export class LogTransport implements Transport {
       this.writer(JSON.stringify(payload, null, 2));
     } catch {
       // Never throw into the host app, even for a dev transport.
+    }
+  }
+}
+
+/**
+ * Emits a production-shaped preview report locally and never opens a socket.
+ * Use `RESTLYTICS_TRANSPORT=preview` before connecting production traffic.
+ */
+export class PreviewTransport implements Transport {
+  readonly reports: TelemetryPreview[] = [];
+
+  constructor(
+    private readonly sampleRate: number,
+    private readonly writer: (json: string) => void = (json) => console.log(json),
+  ) {}
+
+  send(payload: ExportTraceServiceRequest): void {
+    try {
+      const encoded = JSON.stringify(payload);
+      const report: TelemetryPreview = {
+        mode: 'preview',
+        networkRequestMade: false,
+        signal: 'traces',
+        configuredSampleRate: this.sampleRate,
+        sampled: true,
+        spanCount: payload.resourceSpans.reduce(
+          (total, resource) =>
+            total + resource.scopeSpans.reduce((count, scope) => count + scope.spans.length, 0),
+          0,
+        ),
+        jsonBytes: Buffer.byteLength(encoded),
+        gzipBytes: gzipSync(encoded, { level: 6 }).byteLength,
+        redactionPolicyApplied: [
+          'url query values and URL credentials',
+          'sensitive headers and credentials',
+          'request and response bodies',
+          'exception messages and stack traces',
+          'SQL binding values',
+        ],
+        payload,
+      };
+      this.reports.push(report);
+      if (this.reports.length > 16) this.reports.shift();
+      this.writer(JSON.stringify(report, null, 2));
+    } catch {
+      // Preview must retain the SDK's never-throw guarantee.
     }
   }
 }

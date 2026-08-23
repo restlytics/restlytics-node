@@ -153,8 +153,15 @@ double-count. `app = root_duration − union(all children)`, clamped ≥ 0.
 | `RESTLYTICS_TRANSPORT` | behaviour |
 |---|---|
 | `http` (default) | gzip + fire-and-forget POST to `{ingestUrl}/v1/traces` after the response is flushed |
+| `preview` | structured local-only report with the production payload, sampling rate, redaction policy, and byte sizes; never opens a socket and does not require a key |
 | `log` | pretty-print the OTLP payload (local debugging) |
 | `null` | no-op; records payloads in memory for tests |
+
+Before connecting production data, run a representative request with
+`RESTLYTICS_TRANSPORT=preview`. The report explicitly states
+`networkRequestMade: false`, shows the redacted payload, counts spans, and reports
+both uncompressed JSON and production gzip sizes. Sampling remains active, so use
+`RESTLYTICS_SAMPLE_RATE=1` for a deterministic one-request review.
 
 ### Delivery reliability and shutdown
 

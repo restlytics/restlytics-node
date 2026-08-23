@@ -3,7 +3,7 @@
  * Explicit options always win over env, which wins over defaults.
  */
 
-export type TransportName = 'http' | 'null' | 'log';
+export type TransportName = 'http' | 'null' | 'log' | 'preview';
 
 export interface RedactionConfig {
   /** Query-string keys scrubbed from `url.full` (outbound HTTP) and dropped wholesale. */
@@ -115,7 +115,7 @@ function clampRate(rate: number): number {
 export function resolveConfig(options: RestlyticsOptions = {}): ResolvedConfig {
   const transport = (options.transport ?? envStr('RESTLYTICS_TRANSPORT') ?? 'http') as string;
   const normalizedTransport: TransportName =
-    transport === 'null' || transport === 'log' ? transport : 'http';
+    transport === 'null' || transport === 'log' || transport === 'preview' ? transport : 'http';
 
   return {
     key: options.key ?? envStr('RESTLYTICS_KEY') ?? '',
