@@ -44,6 +44,11 @@ jobs:
           # No PR context on a manual run; fall back to the dispatched ref.
           ref: ${{ github.event.pull_request.base.ref || github.ref }}
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
       - name: Determine bump level
         id: bump
         env:
@@ -56,9 +61,9 @@ jobs:
           if [ "$EVENT" = workflow_dispatch ]; then
             # Manual run: the level comes from the dispatch input, not a PR label.
             level="$INPUT_LEVEL"
-          elif printf '%s' "$LABELS" | grep -q '"semver:major"'; then level=major
-          elif printf '%s' "$LABELS" | grep -q '"semver:minor"'; then level=minor
-          elif printf '%s' "$LABELS" | grep -q '"semver:patch"'; then level=patch
+          elif printf '%s' "$LABELS" | grep -q '"semver:major"'; then level="major"
+          elif printf '%s' "$LABELS" | grep -q '"semver:minor"'; then level="minor"
+          elif printf '%s' "$LABELS" | grep -q '"semver:patch"'; then level="patch"
           fi
           if [ -z "$level" ]; then
             echo "No semver:* label on the merged PR; skipping release."
@@ -98,6 +103,27 @@ jobs:
           sed -i -E '0,/("version":[[:space:]]*")[^"]*(")/ s//\1'"$VERSION"'\2/' package.json
           sed -i -E "s/SDK_VERSION = '[^']*'/SDK_VERSION = '$VERSION'/" src/otlp.ts
 
+      - name: Build and validate the release artifact
+        if: steps.bump.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run typecheck
+          npm test
+          mkdir -p release-dist
+          npm pack --pack-destination release-dist
+
+          package="$(find release-dist -name '*.tgz' -print -quit)"
+          smoke_dir="$(mktemp -d)"
+          cd "${smoke_dir}"
+          npm init --yes >/dev/null
+          npm install --no-audit --no-fund "${GITHUB_WORKSPACE}/${package}"
+          node --input-type=module -e \
+            'import { SDK_VERSION } from "@restlytics/node"; if (SDK_VERSION !== "'"${VERSION}"'") process.exit(1)'
+          cd "${GITHUB_WORKSPACE}"
+
       - name: Tag and release
         if: steps.bump.outputs.skip != 'true'
         env:
@@ -113,4 +139,4 @@ jobs:
           fi
           git tag -a "${TAG}" -m "${TAG}"
           git push origin "${TAG}"
-          gh release create "${TAG}" --title "${TAG}" --generate-notes
+          gh release create "${TAG}" release-dist/* --title "${TAG}" --generate-notes
