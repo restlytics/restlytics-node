@@ -15,8 +15,8 @@ call — and ships them to the restlytics ingestion service as **OTLP/JSON**.
 - **Outbound HTTP:** optional, via undici/`fetch` diagnostics channels
 - **Runtime:** Node 18+, ESM, TypeScript types included
 - **Safe by design:** fire-and-forget, gzipped, ~2s timeout, swallows all errors,
-  never blocks or throws into your app. No request/response bodies, no bind
-  values, sensitive query params and headers scrubbed.
+  never blocks or throws into your app. No bind values; every URL query value is
+  scrubbed; headers, bodies, and exception content are omitted.
 
 ## Install
 
@@ -161,8 +161,15 @@ double-count. `app = root_duration − union(all children)`, clamped ≥ 0.
 ```bash
 npm run build       # tsc -> dist/
 npm run typecheck   # tsc --noEmit
-npm test            # node:test runner (sql + intervals unit tests)
+npm test            # node:test runner (contract, sql, intervals, redaction)
 ```
+
+## Cross-language conformance
+
+CI pins [`restlytics/sdk-conformance@v1.1.0`](https://github.com/restlytics/sdk-conformance)
+and compares the vendored fixture before testing. The suite proves exact semantic OTLP output,
+W3C propagation, root sampling, source redaction, and error-status behavior shared by all seven SDKs.
+This is the wire-level gate; real Express/NestJS application validation is tracked separately.
 
 ## License
 
