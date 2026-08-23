@@ -18,6 +18,7 @@ import {
   NullTransport,
   LogTransport,
   type Transport,
+  type TransportDiagnostics,
 } from './transport.js';
 import { createExpressMiddleware, type ExpressMiddlewareOptions } from './integrations/express.js';
 import { createNestMiddleware, RestlyticsInterceptor } from './integrations/nest.js';
@@ -40,6 +41,21 @@ export class Restlytics {
   /** Manually record a DB query span on the active request (generic API, SPEC §8). */
   recordQuery(input: RecordQueryInput): void {
     recordQuery(this.tracer, input);
+  }
+
+  /** Payload-free delivery counters for health checks and shutdown logs. */
+  diagnostics(): TransportDiagnostics | undefined {
+    return this.transport.diagnostics?.();
+  }
+
+  /** Wait for accepted telemetry without closing the SDK. */
+  async flush(timeoutMs = 2000): Promise<boolean> {
+    return (await this.transport.flush?.(timeoutMs)) ?? true;
+  }
+
+  /** Stop accepting telemetry and flush accepted work during process shutdown. */
+  async shutdown(timeoutMs = 2000): Promise<boolean> {
+    return (await this.transport.close?.(timeoutMs)) ?? true;
   }
 }
 
@@ -125,6 +141,7 @@ export {
   NullTransport,
   LogTransport,
   type Transport,
+  type TransportDiagnostics,
   type ErrorReporter,
 } from './transport.js';
 export {

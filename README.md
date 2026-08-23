@@ -156,6 +156,22 @@ double-count. `app = root_duration − union(all children)`, clamped ≥ 0.
 | `log` | pretty-print the OTLP payload (local debugging) |
 | `null` | no-op; records payloads in memory for tests |
 
+### Delivery reliability and shutdown
+
+The HTTP transport uses one worker and a fixed 64-batch queue. `send()` only
+enqueues; when saturated it drops the new batch instead of blocking or growing
+memory. There are no delivery retries. Timeouts, encoding failures, saturation,
+and sends after shutdown are observable without exposing payloads:
+
+```ts
+const snapshot = rl.diagnostics();
+console.log(snapshot?.droppedBatches, snapshot?.failedBatches);
+
+process.once('SIGTERM', async () => {
+  await rl.shutdown(2_000); // bounded graceful flush
+});
+```
+
 ## Development
 
 ```bash
