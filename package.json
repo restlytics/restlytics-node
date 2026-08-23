@@ -75,8 +75,9 @@
     }
   },
   "devDependencies": {
-    "typescript": "^5.7.2",
-    "@types/node": "^22"
+    "@types/node": "^22",
+    "express": "^5.1.0",
+    "typescript": "^5.7.2"
   },
   "publishConfig": {
     "access": "public"
