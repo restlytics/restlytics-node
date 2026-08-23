@@ -13,6 +13,12 @@
  * the OTLP AnyValue wrapper at serialization.
  */
 
+import {
+  isSensitiveAttributeKey,
+  redactExceptionMessage,
+  redactUrl,
+} from "./redact.js";
+
 // ---------------------------------------------------------------------------
 // Wire types (structurally identical to packages/contract)
 // ---------------------------------------------------------------------------
@@ -93,7 +99,7 @@ export const StatusCode = {
 } as const;
 
 /** restlytics span category — drives the db/http/cache/app breakdown (SPEC §4). */
-export type SpanCategory = 'app' | 'db' | 'http' | 'cache' | 'queue' | 'other';
+export type SpanCategory = "app" | "db" | "http" | "cache" | "queue" | "other";
 
 // ---------------------------------------------------------------------------
 // AnyValue helpers
@@ -105,7 +111,9 @@ export function stringValue(v: string): AnyValue {
 
 /** CONTRACT: intValue is a STRING, not a JSON number. */
 export function intValue(v: bigint | number): AnyValue {
-  return { intValue: typeof v === 'bigint' ? v.toString() : Math.trunc(v).toString() };
+  return {
+    intValue: typeof v === "bigint" ? v.toString() : Math.trunc(v).toString(),
+  };
 }
 
 export function boolValue(v: boolean): AnyValue {
@@ -125,10 +133,10 @@ export function keyValue(key: string, value: AnyValue): KeyValue {
 // ---------------------------------------------------------------------------
 
 type AttrValue =
-  | { kind: 'string'; value: string }
-  | { kind: 'int'; value: bigint }
-  | { kind: 'double'; value: number }
-  | { kind: 'bool'; value: boolean };
+  | { kind: "string"; value: string }
+  | { kind: "int"; value: bigint }
+  | { kind: "double"; value: number }
+  | { kind: "bool"; value: boolean };
 
 /**
  * A single span, accumulated in-request and serialized to OTLP/JSON on flush.
@@ -176,37 +184,44 @@ export class Span {
   }
 
   setString(key: string, value: string): this {
-    this.attributes.set(key, { kind: 'string', value });
+    if (isSensitiveAttributeKey(key)) return this;
+    this.attributes.set(key, {
+      kind: "string",
+      value: key.toLowerCase() === "url.full" ? redactUrl(value, []) : value,
+    });
     return this;
   }
 
   /** Record an int attribute. Serialized as intValue (a STRING) per the contract. */
   setInt(key: string, value: bigint | number): this {
-    this.attributes.set(key, { kind: 'int', value: typeof value === 'bigint' ? value : BigInt(Math.trunc(value)) });
+    if (isSensitiveAttributeKey(key)) return this;
+    this.attributes.set(key, {
+      kind: "int",
+      value: typeof value === "bigint" ? value : BigInt(Math.trunc(value)),
+    });
     return this;
   }
 
   setDouble(key: string, value: number): this {
-    this.attributes.set(key, { kind: 'double', value });
+    if (isSensitiveAttributeKey(key)) return this;
+    this.attributes.set(key, { kind: "double", value });
     return this;
   }
 
   setBool(key: string, value: boolean): this {
-    this.attributes.set(key, { kind: 'bool', value });
+    if (isSensitiveAttributeKey(key)) return this;
+    this.attributes.set(key, { kind: "bool", value });
     return this;
   }
 
   getString(key: string): string | undefined {
     const a = this.attributes.get(key);
-    return a && a.kind === 'string' ? a.value : undefined;
+    return a && a.kind === "string" ? a.value : undefined;
   }
 
   setStatus(code: 0 | 1 | 2, message?: string): this {
     this.statusCode = code;
-    if (message !== undefined) {
-      // Cap to keep payloads bounded; full stack traces don't belong on the wire.
-      this.statusMessage = message.slice(0, 1024);
-    }
+    this.statusMessage = redactExceptionMessage(message);
     return this;
   }
 
@@ -233,7 +248,7 @@ export class Span {
     };
 
     // parentSpanId is omitted/empty for the root SERVER span.
-    if (this.parentSpanId !== undefined && this.parentSpanId !== '') {
+    if (this.parentSpanId !== undefined && this.parentSpanId !== "") {
       span.parentSpanId = this.parentSpanId;
     }
 
@@ -248,7 +263,7 @@ export class Span {
     // Only attach status when it carries signal (OK/ERROR); UNSET is the default.
     if (this.statusCode !== StatusCode.UNSET) {
       const status: SpanStatus = { code: this.statusCode };
-      if (this.statusMessage !== undefined && this.statusMessage !== '') {
+      if (this.statusMessage !== undefined && this.statusMessage !== "") {
         status.message = this.statusMessage;
       }
       span.status = status;
@@ -260,13 +275,13 @@ export class Span {
 
 function anyValueOf(av: AttrValue): AnyValue {
   switch (av.kind) {
-    case 'string':
+    case "string":
       return stringValue(av.value);
-    case 'int':
+    case "int":
       return intValue(av.value);
-    case 'double':
+    case "double":
       return doubleValue(av.value);
-    case 'bool':
+    case "bool":
       return boolValue(av.value);
   }
 }
@@ -275,9 +290,9 @@ function anyValueOf(av: AttrValue): AnyValue {
 // Payload builder
 // ---------------------------------------------------------------------------
 
-export const SDK_NAME = 'restlytics-node';
-export const SDK_LANGUAGE = 'nodejs';
-export const SDK_VERSION = '0.1.0';
+export const SDK_NAME = "restlytics-node";
+export const SDK_LANGUAGE = "nodejs";
+export const SDK_VERSION = "0.1.0";
 
 /**
  * Build the top-level OTLP/JSON ExportTraceServiceRequest body. A single
@@ -306,12 +321,15 @@ export function buildPayload(
   };
 }
 
-function resourceAttributes(serviceName: string, environment: string): KeyValue[] {
+function resourceAttributes(
+  serviceName: string,
+  environment: string,
+): KeyValue[] {
   return [
-    keyValue('service.name', stringValue(serviceName)),
-    keyValue('deployment.environment', stringValue(environment)),
-    keyValue('telemetry.sdk.name', stringValue(SDK_NAME)),
-    keyValue('telemetry.sdk.language', stringValue(SDK_LANGUAGE)),
-    keyValue('telemetry.sdk.version', stringValue(SDK_VERSION)),
+    keyValue("service.name", stringValue(serviceName)),
+    keyValue("deployment.environment", stringValue(environment)),
+    keyValue("telemetry.sdk.name", stringValue(SDK_NAME)),
+    keyValue("telemetry.sdk.language", stringValue(SDK_LANGUAGE)),
+    keyValue("telemetry.sdk.version", stringValue(SDK_VERSION)),
   ];
 }
