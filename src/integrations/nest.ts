@@ -98,6 +98,7 @@ export class RestlyticsInterceptor {
         stampRoute();
         try {
           trace!.finish(tracer.transport);
+          tracer.flushLogs();
         } catch (err) {
           tracer.config.onError?.('restlytics: nest finalize failed', err);
         }

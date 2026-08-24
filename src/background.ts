@@ -66,6 +66,7 @@ async function runWork<T>(
       throw error;
     } finally {
       trace.finish(tracer.transport);
+      tracer.flushLogs();
     }
   });
 }

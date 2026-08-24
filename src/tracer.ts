@@ -32,6 +32,7 @@ export class RequestTrace {
   private readonly children: Span[] = [];
   private dbQueryCount = 0;
   private rootCategory: SpanCategory = 'app';
+  private correlationSpanId: string | undefined;
 
   private readonly wallAnchorNs: bigint;
   private readonly hrtimeAnchor: bigint;
@@ -54,7 +55,7 @@ export class RequestTrace {
   }
 
   rootSpanId(): string | undefined {
-    return this.rootSpan?.spanId;
+    return this.correlationSpanId;
   }
 
   /** Open the root SERVER span. Called once at request start. */
@@ -65,11 +66,15 @@ export class RequestTrace {
     category: SpanCategory = 'app',
     linkParent = false,
   ): Span | null {
+    // Keep a correlation span id even when this trace is not sampled. Logs are a
+    // separate signal and must retain their ambient trace context independently
+    // of the trace sampling decision.
+    this.correlationSpanId = Ids.spanId();
     if (!this.sampled) return null;
     const now = this.nowNs();
     this.rootSpan = new Span({
       traceId: this.traceId,
-      spanId: Ids.spanId(),
+      spanId: this.correlationSpanId,
       parentSpanId,
       name,
       kind,
@@ -238,6 +243,7 @@ export function sampleDecision(traceIdHex: string, sampleRate: number): boolean 
  */
 export class Tracer {
   private readonly als = new AsyncLocalStorage<RequestTrace>();
+  private logFlusher: (() => void) | undefined;
 
   constructor(
     readonly config: ResolvedConfig,
@@ -247,6 +253,35 @@ export class Tracer {
   /** The active request trace, or undefined outside a traced request. */
   current(): RequestTrace | undefined {
     return this.als.getStore();
+  }
+
+  /** Active trace id for log correlation, including unsampled traces. */
+  currentTraceId(): string | undefined {
+    return this.current()?.traceId;
+  }
+
+  /** Active span id for log correlation (the root for post-hoc Node integrations). */
+  currentSpanId(): string | undefined {
+    return this.current()?.rootSpanId();
+  }
+
+  /** W3C sampled flag for the active trace, or undefined outside traced work. */
+  currentTraceFlags(): number | undefined {
+    const current = this.current();
+    return current ? (current.sampled ? 1 : 0) : undefined;
+  }
+
+  /** Internal lifecycle bridge: request/job completion drains the log buffer. */
+  setLogFlusher(flusher: (() => void) | undefined): void {
+    this.logFlusher = flusher;
+  }
+
+  flushLogs(): void {
+    try {
+      this.logFlusher?.();
+    } catch (err) {
+      this.config.onError?.('restlytics: log flush failed', err);
+    }
   }
 
   /** Run `fn` with a fresh RequestTrace bound to AsyncLocalStorage. */

@@ -43,16 +43,29 @@ import {
   type QueueCarrier,
   type ScheduleOptions,
 } from './background.js';
+import { LogEmitter, type LogSeverity } from './logs.js';
 
 /** The configured SDK handle returned by {@link init}. Pass it to the integrations. */
 export class Restlytics {
   readonly tracer: Tracer;
+  readonly logger: LogEmitter;
 
   constructor(
     readonly config: ResolvedConfig,
     readonly transport: Transport,
   ) {
     this.tracer = new Tracer(config, transport);
+    this.logger = new LogEmitter(config, this.tracer, transport);
+    this.tracer.setLogFlusher(() => this.logger.flush());
+  }
+
+  /** Record a source-redacted OTLP log. No-op unless `logs` is explicitly enabled. */
+  log(
+    severity: LogSeverity,
+    message: unknown,
+    attributes: Readonly<Record<string, unknown>> = {},
+  ): boolean {
+    return this.logger.record(severity, message, attributes);
   }
 
   /** Manually record a DB query span on the active request (generic API, SPEC §8). */
@@ -90,11 +103,14 @@ export class Restlytics {
 
   /** Wait for accepted telemetry without closing the SDK. */
   async flush(timeoutMs = 2000): Promise<boolean> {
+    this.logger.flush();
     return (await this.transport.flush?.(timeoutMs)) ?? true;
   }
 
   /** Stop accepting telemetry and flush accepted work during process shutdown. */
   async shutdown(timeoutMs = 2000): Promise<boolean> {
+    this.logger.close();
+    this.tracer.setLogFlusher(undefined);
     return (await this.transport.close?.(timeoutMs)) ?? true;
   }
 }
@@ -192,6 +208,7 @@ export {
   type Transport,
   type TransportDiagnostics,
   type TelemetryPreview,
+  type LogTelemetryPreview,
   type ErrorReporter,
 } from './transport.js';
 export {
@@ -208,6 +225,23 @@ export {
   type AnyValue,
   type SpanCategory,
 } from './otlp.js';
+export {
+  LogEmitter,
+  buildLogsPayload,
+  mapLogSeverity,
+  mapPinoSeverity,
+  instrumentConsoleLogs,
+  createPinoLogMethodHook,
+  captureWinstonLog,
+  type ExportLogsServiceRequest,
+  type OtlpLogRecord,
+  type ScopeLogs,
+  type ResourceLogs,
+  type LogSeverity,
+  type SeverityMapping,
+  type LogEmitterOptions,
+  type LogEmitterDiagnostics,
+} from './logs.js';
 export * as ids from './ids.js';
 export { normalize as normalizeSql, operationOf } from './sql.js';
 export { unionLength, type Interval } from './intervals.js';

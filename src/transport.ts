@@ -2,7 +2,12 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { gzip, gzipSync } from 'node:zlib';
 import { URL } from 'node:url';
+import type { ExportLogsServiceRequest } from './logs.js';
 import type { ExportTraceServiceRequest } from './otlp.js';
+
+type TelemetryBatch =
+  | { signal: 'traces'; payload: ExportTraceServiceRequest }
+  | { signal: 'logs'; payload: ExportLogsServiceRequest };
 
 /**
  * Ships a fully-built OTLP/JSON ExportTraceServiceRequest to the ingestion service.
@@ -13,6 +18,8 @@ import type { ExportTraceServiceRequest } from './otlp.js';
  */
 export interface Transport {
   send(payload: ExportTraceServiceRequest): void;
+  /** Optional for compatibility with existing custom trace-only transports. */
+  sendLogs?(payload: ExportLogsServiceRequest): void;
   flush?(timeoutMs?: number): Promise<boolean>;
   close?(timeoutMs?: number): Promise<boolean>;
   diagnostics?(): TransportDiagnostics;
@@ -45,6 +52,18 @@ export interface TelemetryPreview {
   readonly payload: ExportTraceServiceRequest;
 }
 
+/** A local-only, structured description of a production-shaped log batch. */
+export interface LogTelemetryPreview {
+  readonly mode: 'preview';
+  readonly networkRequestMade: false;
+  readonly signal: 'logs';
+  readonly logRecordCount: number;
+  readonly jsonBytes: number;
+  readonly gzipBytes: number;
+  readonly redactionPolicyApplied: readonly string[];
+  readonly payload: ExportLogsServiceRequest;
+}
+
 function report(onError: ErrorReporter | undefined, message: string, error?: unknown): void {
   if (!onError) return;
   try {
@@ -55,7 +74,7 @@ function report(onError: ErrorReporter | undefined, message: string, error?: unk
 }
 
 /**
- * Default transport: gzip the JSON body and POST it to `{ingestUrl}/v1/traces`
+ * Default transport: gzip the JSON body and POST it to the OTLP signal path
  * with node's built-in http/https. Fire-and-forget — we don't await the response.
  *
  * Design constraints (all in service of "telemetry must never hurt the host app"):
@@ -74,7 +93,7 @@ function report(onError: ErrorReporter | undefined, message: string, error?: unk
  *   body = gzip(json)
  */
 export class HttpTransport implements Transport {
-  private readonly queue: ExportTraceServiceRequest[] = [];
+  private readonly queue: TelemetryBatch[] = [];
   private working = false;
   private isClosed = false;
   private acceptedBatches = 0;
@@ -91,6 +110,14 @@ export class HttpTransport implements Transport {
   ) {}
 
   send(payload: ExportTraceServiceRequest): void {
+    this.enqueue({ signal: 'traces', payload });
+  }
+
+  sendLogs(payload: ExportLogsServiceRequest): void {
+    this.enqueue({ signal: 'logs', payload });
+  }
+
+  private enqueue(batch: TelemetryBatch): void {
     // The request path only performs a bounded, non-blocking enqueue. JSON, gzip,
     // DNS and network I/O all run on the single background worker.
     if (this.isClosed || this.ingestUrl === '' || this.key === '') {
@@ -102,7 +129,7 @@ export class HttpTransport implements Transport {
       return;
     }
 
-    this.queue.push(payload);
+    this.queue.push(batch);
     this.acceptedBatches += 1;
     this.startWorker();
   }
@@ -143,16 +170,16 @@ export class HttpTransport implements Transport {
   private async drain(): Promise<void> {
     try {
       while (this.queue.length > 0) {
-        const payload = this.queue.shift();
-        if (!payload) continue;
+        const batch = this.queue.shift();
+        if (!batch) continue;
         try {
-          const json = JSON.stringify(payload);
+          const json = JSON.stringify(batch.payload);
           const body = await new Promise<Buffer>((resolve, reject) => {
             gzip(json, { level: 6 }, (error, encoded) =>
               error ? reject(error) : resolve(encoded),
             );
           });
-          await this.post(body);
+          await this.post(body, batch.signal);
           this.deliveredBatches += 1;
         } catch (err) {
           this.failedBatches += 1;
@@ -170,10 +197,10 @@ export class HttpTransport implements Transport {
     report(this.onError, message);
   }
 
-  private post(body: Buffer): Promise<void> {
+  private post(body: Buffer, signal: TelemetryBatch['signal']): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        const url = new URL(this.ingestUrl + '/v1/traces');
+        const url = new URL(this.ingestUrl + (signal === 'logs' ? '/v1/logs' : '/v1/traces'));
         const isHttps = url.protocol === 'https:';
         const requestFn = isHttps ? httpsRequest : httpRequest;
 
@@ -229,10 +256,17 @@ export class HttpTransport implements Transport {
 export class NullTransport implements Transport {
   lastPayload: ExportTraceServiceRequest | null = null;
   readonly sent: ExportTraceServiceRequest[] = [];
+  lastLogsPayload: ExportLogsServiceRequest | null = null;
+  readonly sentLogs: ExportLogsServiceRequest[] = [];
 
   send(payload: ExportTraceServiceRequest): void {
     this.lastPayload = payload;
     this.sent.push(payload);
+  }
+
+  sendLogs(payload: ExportLogsServiceRequest): void {
+    this.lastLogsPayload = payload;
+    this.sentLogs.push(payload);
   }
 }
 
@@ -245,6 +279,14 @@ export class LogTransport implements Transport {
   constructor(private readonly writer: (json: string) => void = (j) => console.log(j)) {}
 
   send(payload: ExportTraceServiceRequest): void {
+    this.write(payload);
+  }
+
+  sendLogs(payload: ExportLogsServiceRequest): void {
+    this.write(payload);
+  }
+
+  private write(payload: ExportTraceServiceRequest | ExportLogsServiceRequest): void {
     try {
       this.writer(JSON.stringify(payload, null, 2));
     } catch {
@@ -259,6 +301,7 @@ export class LogTransport implements Transport {
  */
 export class PreviewTransport implements Transport {
   readonly reports: TelemetryPreview[] = [];
+  readonly logReports: LogTelemetryPreview[] = [];
 
   constructor(
     private readonly sampleRate: number,
@@ -292,6 +335,37 @@ export class PreviewTransport implements Transport {
       };
       this.reports.push(report);
       if (this.reports.length > 16) this.reports.shift();
+      this.writer(JSON.stringify(report, null, 2));
+    } catch {
+      // Preview must retain the SDK's never-throw guarantee.
+    }
+  }
+
+  sendLogs(payload: ExportLogsServiceRequest): void {
+    try {
+      const encoded = JSON.stringify(payload);
+      const report: LogTelemetryPreview = {
+        mode: 'preview',
+        networkRequestMade: false,
+        signal: 'logs',
+        logRecordCount: payload.resourceLogs.reduce(
+          (total, resource) =>
+            total + resource.scopeLogs.reduce((count, scope) => count + scope.logRecords.length, 0),
+          0,
+        ),
+        jsonBytes: Buffer.byteLength(encoded),
+        gzipBytes: gzipSync(encoded, { level: 6 }).byteLength,
+        redactionPolicyApplied: [
+          'source-redacted message text',
+          'sensitive structured attribute keys',
+          'request and response bodies',
+          'exception messages and stack traces',
+          'SQL binding values',
+        ],
+        payload,
+      };
+      this.logReports.push(report);
+      if (this.logReports.length > 16) this.logReports.shift();
       this.writer(JSON.stringify(report, null, 2));
     } catch {
       // Preview must retain the SDK's never-throw guarantee.
