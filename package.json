@@ -1,6 +1,6 @@
 {
   "name": "@restlytics/node",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "restlytics tracing SDK for Node.js — Express & NestJS request tracing with pg/mysql2 DB instrumentation, emitting OTLP/JSON.",
   "license": "MIT",
   "type": "module",
