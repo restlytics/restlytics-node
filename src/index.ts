@@ -32,6 +32,17 @@ import { instrumentPg, type InstrumentPgOptions } from './integrations/pg.js';
 import { instrumentMysql2, type InstrumentMysql2Options } from './integrations/mysql2.js';
 import { instrumentHttp } from './integrations/http.js';
 import { recordQuery, type RecordQueryInput } from './integrations/db.js';
+import {
+  runCommand as traceCommand,
+  runEnqueue as traceEnqueue,
+  runJob as traceJob,
+  runSchedule as traceSchedule,
+  type CommandOptions,
+  type EnqueueOptions,
+  type JobOptions,
+  type QueueCarrier,
+  type ScheduleOptions,
+} from './background.js';
 
 /** The configured SDK handle returned by {@link init}. Pass it to the integrations. */
 export class Restlytics {
@@ -47,6 +58,29 @@ export class Restlytics {
   /** Manually record a DB query span on the active request (generic API, SPEC §8). */
   recordQuery(input: RecordQueryInput): void {
     recordQuery(this.tracer, input);
+  }
+
+  runJob<T>(options: JobOptions, operation: () => T | Promise<T>): Promise<T> {
+    return traceJob(this.tracer, options, operation);
+  }
+
+  runCommand(
+    options: CommandOptions,
+    operation: () => number | void | Promise<number | void>,
+  ): Promise<number | void> {
+    return traceCommand(this.tracer, options, operation);
+  }
+
+  runSchedule<T>(options: ScheduleOptions, operation: () => T | Promise<T>): Promise<T> {
+    return traceSchedule(this.tracer, options, operation);
+  }
+
+  runEnqueue<T>(
+    options: EnqueueOptions,
+    carrier: QueueCarrier,
+    operation: (carrier: QueueCarrier) => T | Promise<T>,
+  ): Promise<T> {
+    return traceEnqueue(this.tracer, options, carrier, operation);
   }
 
   /** Payload-free delivery counters for health checks and shutdown logs. */
@@ -178,6 +212,17 @@ export * as ids from './ids.js';
 export { normalize as normalizeSql, operationOf } from './sql.js';
 export { unionLength, type Interval } from './intervals.js';
 export { recordQuery, type RecordQueryInput } from './integrations/db.js';
+export {
+  runJob,
+  runCommand,
+  runSchedule,
+  runEnqueue,
+  type JobOptions,
+  type CommandOptions,
+  type ScheduleOptions,
+  type EnqueueOptions,
+  type QueueCarrier,
+} from './background.js';
 export { createExpressMiddleware, type ExpressMiddlewareOptions } from './integrations/express.js';
 export { createNestMiddleware, RestlyticsInterceptor } from './integrations/nest.js';
 export { instrumentPg, type InstrumentPgOptions } from './integrations/pg.js';

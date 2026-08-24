@@ -148,6 +148,38 @@ The SERVER span carries `restlytics.self_ns.{db,http,cache,app}` (nanoseconds),
 computed via **interval-union** so overlapping/parallel children don't
 double-count. `app = root_duration − union(all children)`, clamped ≥ 0.
 
+## Background jobs, commands, and schedules
+
+Use the background wrappers at the framework boundary. Names must be stable
+handler/signature names—never job ids, arguments, or payload data.
+
+```ts
+await rl.runJob(
+  {
+    name: 'billing.reconcile',
+    system: 'redis',
+    destination: 'billing',
+    attempt: job.attemptsMade + 1,
+    traceparent: job.data.__restlytics?.traceparent,
+  },
+  () => reconcile(job.data),
+);
+
+await rl.runEnqueue(
+  { system: 'redis', destination: 'billing' },
+  payload,
+  (carrier) => queue.add('billing.reconcile', carrier),
+);
+```
+
+`runCommand` records the returned exit code and `runSchedule` records the cron
+expression as an attribute. Job roots are `CONSUMER` spans; commands and
+schedules are `SERVER` roots. Enqueue propagation uses a namespaced
+`__restlytics` carrier, honors the upstream sampling decision, and records the
+async boundary as both parentage and a span link. Queue time is reported in
+`restlytics.self_ns.queue`. Errors set status only; exception content and job
+payloads are never exported.
+
 ## Transports
 
 | `RESTLYTICS_TRANSPORT` | behaviour |

@@ -44,6 +44,12 @@ export interface SpanStatus {
   message?: string;
 }
 
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+  attributes?: KeyValue[];
+}
+
 export interface OtlpSpan {
   traceId: string;
   spanId: string;
@@ -53,6 +59,7 @@ export interface OtlpSpan {
   startTimeUnixNano: string;
   endTimeUnixNano: string;
   attributes?: KeyValue[];
+  links?: SpanLink[];
   status?: SpanStatus;
 }
 
@@ -99,7 +106,16 @@ export const StatusCode = {
 } as const;
 
 /** restlytics span category — drives the db/http/cache/app breakdown (SPEC §4). */
-export type SpanCategory = "app" | "db" | "http" | "cache" | "queue" | "other";
+export type SpanCategory =
+  | "app"
+  | "db"
+  | "http"
+  | "cache"
+  | "queue"
+  | "other"
+  | "job"
+  | "command"
+  | "schedule";
 
 // ---------------------------------------------------------------------------
 // AnyValue helpers
@@ -152,6 +168,7 @@ export class Span {
   endUnixNano: bigint;
 
   private readonly attributes = new Map<string, AttrValue>();
+  private readonly links: SpanLink[] = [];
   private statusCode: 0 | 1 | 2 = StatusCode.UNSET;
   private statusMessage: string | undefined;
 
@@ -219,6 +236,15 @@ export class Span {
     return a && a.kind === "string" ? a.value : undefined;
   }
 
+  addLink(traceId: string, spanId: string, kind = "enqueue"): this {
+    this.links.push({
+      traceId,
+      spanId,
+      attributes: [keyValue("restlytics.link.kind", stringValue(kind))],
+    });
+    return this;
+  }
+
   setStatus(code: 0 | 1 | 2, message?: string): this {
     this.statusCode = code;
     this.statusMessage = redactExceptionMessage(message);
@@ -259,6 +285,7 @@ export class Span {
       }
       span.attributes = attrs;
     }
+    if (this.links.length > 0) span.links = [...this.links];
 
     // Only attach status when it carries signal (OK/ERROR); UNSET is the default.
     if (this.statusCode !== StatusCode.UNSET) {

@@ -31,6 +31,7 @@ export class RequestTrace {
 
   private readonly children: Span[] = [];
   private dbQueryCount = 0;
+  private rootCategory: SpanCategory = 'app';
 
   private readonly wallAnchorNs: bigint;
   private readonly hrtimeAnchor: bigint;
@@ -57,7 +58,13 @@ export class RequestTrace {
   }
 
   /** Open the root SERVER span. Called once at request start. */
-  openRoot(name: string, parentSpanId: string | undefined): Span | null {
+  openRoot(
+    name: string,
+    parentSpanId: string | undefined,
+    kind: number = SpanKind.SERVER,
+    category: SpanCategory = 'app',
+    linkParent = false,
+  ): Span | null {
     if (!this.sampled) return null;
     const now = this.nowNs();
     this.rootSpan = new Span({
@@ -65,11 +72,38 @@ export class RequestTrace {
       spanId: Ids.spanId(),
       parentSpanId,
       name,
-      kind: SpanKind.SERVER,
+      kind,
       startUnixNano: now,
       endUnixNano: now,
     });
+    this.rootCategory = category;
+    this.rootSpan.setString('restlytics.category', category);
+    if (linkParent && parentSpanId) this.rootSpan.addLink(this.traceId, parentSpanId);
     return this.rootSpan;
+  }
+
+  startChild(
+    name: string,
+    category: SpanCategory,
+    kind: number = SpanKind.CLIENT,
+    spanId?: string,
+  ): Span | null {
+    if (!this.sampled || this.rootSpan === null || this.children.length >= this.config.maxSpans) {
+      return null;
+    }
+    const now = this.nowNs();
+    const span = new Span({
+      traceId: this.traceId,
+      spanId: spanId ?? Ids.spanId(),
+      parentSpanId: this.rootSpan.spanId,
+      name,
+      kind,
+      startUnixNano: now,
+      endUnixNano: now,
+    });
+    span.setString('restlytics.category', category);
+    this.children.push(span);
+    return span;
   }
 
   /**
@@ -117,7 +151,7 @@ export class RequestTrace {
       this.rootSpan.setEnd(this.nowNs());
       this.attachSelfTime();
       this.rootSpan.setInt('restlytics.db_query_count', this.dbQueryCount);
-      this.rootSpan.setString('restlytics.category', 'app');
+      this.rootSpan.setString('restlytics.category', this.rootCategory);
 
       const payload = buildPayload(this.config.serviceName, this.config.env, [
         this.rootSpan,
@@ -138,10 +172,11 @@ export class RequestTrace {
     const rootStart = root.startUnixNano;
     const rootDur = root.durationNs();
 
-    const byCat: Record<'db' | 'http' | 'cache' | 'app', Interval[]> = {
+    const byCat: Record<'db' | 'http' | 'cache' | 'queue' | 'app', Interval[]> = {
       db: [],
       http: [],
       cache: [],
+      queue: [],
       app: [],
     };
     const all: Interval[] = [];
@@ -160,6 +195,7 @@ export class RequestTrace {
     const selfDb = unionLength(byCat.db);
     const selfHttp = unionLength(byCat.http);
     const selfCache = unionLength(byCat.cache);
+    const selfQueue = unionLength(byCat.queue);
     // app self-time = explicit app-category child time + the root's own exclusive
     // (uncovered) time. Mirrors the ingestion service's computation.
     const uncovered = rootDur - unionLength(all);
@@ -168,14 +204,15 @@ export class RequestTrace {
     root.setInt('restlytics.self_ns.db', selfDb);
     root.setInt('restlytics.self_ns.http', selfHttp);
     root.setInt('restlytics.self_ns.cache', selfCache);
+    root.setInt('restlytics.self_ns.queue', selfQueue);
     root.setInt('restlytics.self_ns.app', selfApp);
   }
 }
 
 /** Read a span's restlytics.category for self-time bucketing; default 'app'. */
-function categoryOf(span: Span): 'db' | 'http' | 'cache' | 'app' {
+function categoryOf(span: Span): 'db' | 'http' | 'cache' | 'queue' | 'app' {
   const cat = span.getString('restlytics.category');
-  if (cat === 'db' || cat === 'http' || cat === 'cache' || cat === 'app') {
+  if (cat === 'db' || cat === 'http' || cat === 'cache' || cat === 'queue' || cat === 'app') {
     return cat;
   }
   return 'app';
@@ -250,10 +287,20 @@ export class Tracer {
   }
 
   /** Open the root span for a trace begun by {@link begin}. */
-  openRoot(trace: RequestTrace, name: string): Span | null {
+  openRoot(
+    trace: RequestTrace,
+    name: string,
+    options: { kind?: number; category?: SpanCategory; linkParent?: boolean } = {},
+  ): Span | null {
     const parent = pendingParent.get(trace);
     pendingParent.delete(trace);
-    return trace.openRoot(name, parent);
+    return trace.openRoot(
+      name,
+      parent,
+      options.kind,
+      options.category,
+      options.linkParent,
+    );
   }
 
   /** Helper used by status logic. */
