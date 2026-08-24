@@ -334,9 +334,7 @@ export function buildPayload(
   return {
     resourceSpans: [
       {
-        resource: {
-          attributes: resourceAttributes(serviceName, environment),
-        },
+        resource: buildResource(serviceName, environment),
         scopeSpans: [
           {
             scope: { name: SDK_NAME, version: SDK_VERSION },
@@ -348,15 +346,18 @@ export function buildPayload(
   };
 }
 
-function resourceAttributes(
+/** Shared resource envelope used byte-for-byte by traces and logs. */
+export function buildResource(
   serviceName: string,
   environment: string,
-): KeyValue[] {
-  return [
-    keyValue("service.name", stringValue(serviceName)),
-    keyValue("deployment.environment", stringValue(environment)),
-    keyValue("telemetry.sdk.name", stringValue(SDK_NAME)),
-    keyValue("telemetry.sdk.language", stringValue(SDK_LANGUAGE)),
-    keyValue("telemetry.sdk.version", stringValue(SDK_VERSION)),
-  ];
+): Resource {
+  return {
+    attributes: [
+      keyValue("service.name", stringValue(serviceName)),
+      keyValue("deployment.environment", stringValue(environment)),
+      keyValue("telemetry.sdk.name", stringValue(SDK_NAME)),
+      keyValue("telemetry.sdk.language", stringValue(SDK_LANGUAGE)),
+      keyValue("telemetry.sdk.version", stringValue(SDK_VERSION)),
+    ],
+  };
 }

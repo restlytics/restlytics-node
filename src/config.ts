@@ -31,6 +31,10 @@ export interface RestlyticsOptions {
   instruments?: Partial<InstrumentToggles>;
   ignorePaths?: string[];
   maxSpans?: number;
+  /** Opt in to native OTLP log export. Disabled by default. */
+  logs?: boolean;
+  /** Minimum OpenTelemetry severity number exported (default WARN = 13). */
+  logsMinSeverity?: number;
   redaction?: Partial<RedactionConfig>;
   /** Optional error sink for transport/instrumentation failures (never throws). */
   onError?: (message: string, error?: unknown) => void;
@@ -49,6 +53,8 @@ export interface ResolvedConfig {
   instruments: InstrumentToggles;
   ignorePaths: string[];
   maxSpans: number;
+  logs: boolean;
+  logsMinSeverity: number;
   redaction: RedactionConfig;
   onError: ((message: string, error?: unknown) => void) | undefined;
 }
@@ -109,6 +115,11 @@ function clampRate(rate: number): number {
   return rate;
 }
 
+function clampSeverity(severity: number): number {
+  if (!Number.isFinite(severity)) return 13;
+  return Math.max(1, Math.min(24, Math.trunc(severity)));
+}
+
 /**
  * Resolve the final config. Precedence: explicit options > environment > default.
  */
@@ -139,6 +150,10 @@ export function resolveConfig(options: RestlyticsOptions = {}): ResolvedConfig {
     },
     ignorePaths: options.ignorePaths ?? splitList(envStr('RESTLYTICS_IGNORE_PATHS')) ?? DEFAULT_IGNORE_PATHS,
     maxSpans: options.maxSpans ?? envInt('RESTLYTICS_MAX_SPANS') ?? 2000,
+    logs: options.logs ?? envBool('RESTLYTICS_LOGS') ?? false,
+    logsMinSeverity: clampSeverity(
+      options.logsMinSeverity ?? envInt('RESTLYTICS_LOGS_MIN_SEVERITY') ?? 13,
+    ),
     redaction: {
       queryKeys: options.redaction?.queryKeys ?? DEFAULT_QUERY_KEYS,
       headers: (options.redaction?.headers ?? DEFAULT_SENSITIVE_HEADERS).map((h) => h.toLowerCase()),

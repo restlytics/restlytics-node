@@ -99,6 +99,7 @@ function finishRequest(tracer: Tracer, trace: ReturnType<Tracer['begin']>, req: 
   }
 
   trace.finish(tracer.transport);
+  tracer.flushLogs();
 }
 
 function methodOf(req: ExpressReq): string {

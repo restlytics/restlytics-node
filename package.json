@@ -1,7 +1,7 @@
 {
   "name": "@restlytics/node",
   "version": "0.1.0",
-  "description": "restlytics tracing SDK for Node.js — Express & NestJS request tracing with pg/mysql2 DB instrumentation, emitting OTLP/JSON.",
+  "description": "restlytics observability SDK for Node.js — trace-correlated, source-redacted OTLP/JSON traces and opt-in logs.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -30,6 +30,10 @@
     "./mysql2": {
       "types": "./dist/integrations/mysql2.d.ts",
       "import": "./dist/integrations/mysql2.js"
+    },
+    "./logs": {
+      "types": "./dist/logs.d.ts",
+      "import": "./dist/logs.js"
     }
   },
   "files": [
@@ -47,6 +51,7 @@
     "restlytics",
     "tracing",
     "observability",
+    "logging",
     "otlp",
     "opentelemetry",
     "apm",

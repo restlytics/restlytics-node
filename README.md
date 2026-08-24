@@ -1,8 +1,9 @@
 # @restlytics/node
 
-Framework-native tracing SDK for Node.js. Captures **one trace per HTTP request**
+Framework-native observability SDK for Node.js. Captures **one trace per HTTP request**
 — a root SERVER span plus CLIENT child spans for each DB query and outbound HTTP
-call — and ships them to the restlytics ingestion service as **OTLP/JSON**.
+call — plus opt-in, source-redacted application logs, and ships both signals as
+**OTLP/JSON**.
 
 > One contract, every language. This SDK conforms to the cross-language
 > [`SPEC.md`](../SPEC.md): same wire format, same attribute keys, same SQL
@@ -13,6 +14,7 @@ call — and ships them to the restlytics ingestion service as **OTLP/JSON**.
 - **Frameworks:** Express, NestJS
 - **DB:** `pg`, `mysql2` (+ a generic `recordDbQuery` for anything else)
 - **Outbound HTTP:** optional, via undici/`fetch` diagnostics channels
+- **Logs:** opt-in logger-agnostic API with console, Pino, and Winston-friendly hooks
 - **Runtime:** Node 18+, ESM, TypeScript types included
 - **Safe by design:** fire-and-forget, gzipped, ~2s timeout, swallows all errors,
   never blocks or throws into your app. No bind values; every URL query value is
@@ -44,7 +46,7 @@ RESTLYTICS_ENV=production
 # Head-based sampling: fraction of traces to keep (0.0–1.0). Default 1.0.
 RESTLYTICS_SAMPLE_RATE=1.0
 
-# Transport: http (default) | log | null
+# Transport: http (default) | preview | log | null
 RESTLYTICS_TRANSPORT=http
 RESTLYTICS_TIMEOUT_MS=2000
 
@@ -63,6 +65,10 @@ RESTLYTICS_IGNORE_PATHS=/health,/healthz,/metrics
 
 # Bound in-request span buffer (memory cap under pathological N+1)
 RESTLYTICS_MAX_SPANS=2000
+
+# Native OTLP logs are OFF by default. WARN (13) and above ship when enabled.
+RESTLYTICS_LOGS=false
+RESTLYTICS_LOGS_MIN_SEVERITY=13
 ```
 
 Anything settable via env can also be passed to `init()`; explicit options win
@@ -142,6 +148,77 @@ instrumentOutboundHttp(rl); // best-effort: global fetch() / undici
 Records an HTTP CLIENT span per outbound call with the query string of `url.full`
 redacted. Best-effort — silently does nothing if the channels aren't available.
 
+## Trace-correlated logs (opt-in)
+
+Enable `RESTLYTICS_LOGS=true`, then use the dependency-free API from any logger:
+
+```ts
+const rl = init();
+
+rl.log('warn', 'checkout retry for https://shop.test/pay?token=secret', {
+  component: 'checkout',
+  retry: 2,
+});
+```
+
+The default minimum is WARN (`13`). Levels map deterministically to OTel severity:
+debug/trace `5`, info `9`, notice `10`, warn `13`, error `17`, critical `18`, and
+fatal/alert/emergency `21`. Numeric levels passed to `rl.log()` are interpreted as
+OTel severity numbers (`1`–`24`).
+
+Records emitted inside Restlytics request/job/command/schedule context carry its
+active `traceId`, root `spanId`, and sampled flag. Records outside traced work still
+ship without IDs. Node's DB and HTTP spans are created post-hoc, so the root is the
+active correlation span during those operations.
+
+The SDK scrubs credentials, emails, URL secrets, private keys, and other recognized
+sensitive text before buffering; it rejects sensitive structured keys, nested
+objects, request/response content, bindings, and exception data. Keep application
+logging source-redacted too: no scrubber can identify every domain-specific secret
+stored under an otherwise safe custom key.
+
+### Console
+
+```ts
+import { init, instrumentConsoleLogs } from '@restlytics/node';
+
+const rl = init();
+const restoreConsole = instrumentConsoleLogs(rl);
+// console.warn/error are captured and still behave normally.
+// restoreConsole() removes the hook.
+```
+
+### Pino (in-process hook)
+
+```ts
+import pino from 'pino';
+import { init, createPinoLogMethodHook } from '@restlytics/node';
+
+const rl = init();
+const logger = pino({ hooks: { logMethod: createPinoLogMethodHook(rl) } });
+```
+
+Use the in-process hook rather than a Pino worker-thread transport: worker threads
+do not share Node `AsyncLocalStorage`, so they cannot retain trace correlation.
+
+### Winston (format hook)
+
+```ts
+import winston from 'winston';
+import { init, captureWinstonLog } from '@restlytics/node';
+
+const rl = init();
+const restlyticsFormat = winston.format((info) => {
+  captureWinstonLog(rl, info);
+  return info;
+});
+const logger = winston.createLogger({ format: restlyticsFormat() });
+```
+
+Log capture uses a 256-record memory cap, exports in batches of at most 64, and
+drains on a size/time threshold, request/job completion, `flush()`, or `shutdown()`.
+Transport and capture failures are swallowed and available through `onError`.
+
 ## Self-time breakdown
 
 The SERVER span carries `restlytics.self_ns.{db,http,cache,app}` (nanoseconds),
@@ -184,7 +261,7 @@ payloads are never exported.
 
 | `RESTLYTICS_TRANSPORT` | behaviour |
 |---|---|
-| `http` (default) | gzip + fire-and-forget POST to `{ingestUrl}/v1/traces` after the response is flushed |
+| `http` (default) | gzip + fire-and-forget POST to `{ingestUrl}/v1/traces` and opt-in `/v1/logs` |
 | `preview` | structured local-only report with the production payload, sampling rate, redaction policy, and byte sizes; never opens a socket and does not require a key |
 | `log` | pretty-print the OTLP payload (local debugging) |
 | `null` | no-op; records payloads in memory for tests |
@@ -197,14 +274,16 @@ both uncompressed JSON and production gzip sizes. Sampling remains active, so us
 
 ### Delivery reliability and shutdown
 
-The HTTP transport uses one worker and a fixed 64-batch queue. `send()` only
-enqueues; when saturated it drops the new batch instead of blocking or growing
-memory. There are no delivery retries. Timeouts, encoding failures, saturation,
-and sends after shutdown are observable without exposing payloads:
+The HTTP transport uses one worker and a shared fixed 64-batch queue. Trace and
+log sends only enqueue; when saturated the transport drops the new batch instead
+of blocking or growing memory. There are no delivery retries. Timeouts, encoding
+failures, saturation, and sends after shutdown are observable without exposing
+payloads:
 
 ```ts
 const snapshot = rl.diagnostics();
 console.log(snapshot?.droppedBatches, snapshot?.failedBatches);
+console.log(rl.logger.diagnostics().droppedRecords);
 
 process.once('SIGTERM', async () => {
   await rl.shutdown(2_000); // bounded graceful flush
