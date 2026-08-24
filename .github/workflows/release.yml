@@ -12,6 +12,18 @@ on:
   pull_request:
     types: [closed]
     branches: [main]
+  # Manual escape hatch: the merge trigger above is the only automatic path, so a
+  # release run that fails, is cancelled, or otherwise leaves main untagged cannot
+  # be retried without this. Run it from the Actions tab AGAINST MAIN and pick the
+  # bump level; the new version is computed from the latest tag either way.
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump level
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
 
 permissions:
   contents: write
@@ -23,24 +35,35 @@ concurrency:
 jobs:
   release:
     name: Tag & release
-    if: github.event.pull_request.merged == true
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.base.ref }}
+          # No PR context on a manual run; fall back to the dispatched ref.
+          ref: ${{ github.event.pull_request.base.ref || github.ref }}
 
-      - name: Determine bump from label
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Determine bump level
         id: bump
         env:
+          EVENT: ${{ github.event_name }}
+          INPUT_LEVEL: ${{ inputs.bump }}
           LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
           level=""
-          if   printf '%s' "$LABELS" | grep -q '"semver:major"'; then level=major
-          elif printf '%s' "$LABELS" | grep -q '"semver:minor"'; then level=minor
-          elif printf '%s' "$LABELS" | grep -q '"semver:patch"'; then level=patch
+          if [ "$EVENT" = workflow_dispatch ]; then
+            # Manual run: the level comes from the dispatch input, not a PR label.
+            level="$INPUT_LEVEL"
+          elif printf '%s' "$LABELS" | grep -q '"semver:major"'; then level="major"
+          elif printf '%s' "$LABELS" | grep -q '"semver:minor"'; then level="minor"
+          elif printf '%s' "$LABELS" | grep -q '"semver:patch"'; then level="patch"
           fi
           if [ -z "$level" ]; then
             echo "No semver:* label on the merged PR; skipping release."
@@ -78,7 +101,28 @@ jobs:
         run: |
           set -euo pipefail
           sed -i -E '0,/("version":[[:space:]]*")[^"]*(")/ s//\1'"$VERSION"'\2/' package.json
-          sed -i -E "s/SDK_VERSION = '[^']*'/SDK_VERSION = '$VERSION'/" src/otlp.ts
+          sed -i -E 's/SDK_VERSION = "[^"]*"/SDK_VERSION = "'"$VERSION"'"/' src/otlp.ts
+
+      - name: Build and validate the release artifact
+        if: steps.bump.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run typecheck
+          npm test
+          mkdir -p release-dist
+          npm pack --pack-destination release-dist
+
+          package="$(find release-dist -name '*.tgz' -print -quit)"
+          smoke_dir="$(mktemp -d)"
+          cd "${smoke_dir}"
+          npm init --yes >/dev/null
+          npm install --no-audit --no-fund "${GITHUB_WORKSPACE}/${package}"
+          node --input-type=module -e \
+            'import { SDK_VERSION } from "@restlytics/node"; if (SDK_VERSION !== "'"${VERSION}"'") process.exit(1)'
+          cd "${GITHUB_WORKSPACE}"
 
       - name: Tag and release
         if: steps.bump.outputs.skip != 'true'
@@ -95,7 +139,7 @@ jobs:
           fi
           git tag -a "${TAG}" -m "${TAG}"
           git push origin "${TAG}"
-          gh release create "${TAG}" --title "${TAG}" --generate-notes
+          gh release create "${TAG}" release-dist/* --title "${TAG}" --generate-notes
 
       # --- Publish to npm (best-effort: skips if NPM_TOKEN is not configured) ---
       - name: Set up Node
@@ -116,6 +160,5 @@ jobs:
             echo "::warning::NPM_TOKEN not set — skipping npm publish for ${TAG}."
             exit 0
           fi
-          npm install --no-audit --no-fund
-          npm run build
-          npm publish --access public
+          package="$(find release-dist -name '*.tgz' -print -quit)"
+          npm publish "${package}" --access public

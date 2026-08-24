@@ -11,13 +11,20 @@
  * Everything is fire-and-forget and never throws into the host app (SPEC §6).
  */
 
-import { resolveConfig, type RestlyticsOptions, type ResolvedConfig } from './config.js';
+import {
+  resolveConfig,
+  type RestlyticsOptions,
+  type ResolvedConfig,
+  type TransportName,
+} from './config.js';
 import { Tracer } from './tracer.js';
 import {
   HttpTransport,
   NullTransport,
   LogTransport,
+  PreviewTransport,
   type Transport,
+  type TransportDiagnostics,
 } from './transport.js';
 import { createExpressMiddleware, type ExpressMiddlewareOptions } from './integrations/express.js';
 import { createNestMiddleware, RestlyticsInterceptor } from './integrations/nest.js';
@@ -41,6 +48,21 @@ export class Restlytics {
   recordQuery(input: RecordQueryInput): void {
     recordQuery(this.tracer, input);
   }
+
+  /** Payload-free delivery counters for health checks and shutdown logs. */
+  diagnostics(): TransportDiagnostics | undefined {
+    return this.transport.diagnostics?.();
+  }
+
+  /** Wait for accepted telemetry without closing the SDK. */
+  async flush(timeoutMs = 2000): Promise<boolean> {
+    return (await this.transport.flush?.(timeoutMs)) ?? true;
+  }
+
+  /** Stop accepting telemetry and flush accepted work during process shutdown. */
+  async shutdown(timeoutMs = 2000): Promise<boolean> {
+    return (await this.transport.close?.(timeoutMs)) ?? true;
+  }
 }
 
 /** Choose a transport from config. `http` is the default fire-and-forget sender. */
@@ -50,6 +72,8 @@ function makeTransport(config: ResolvedConfig): Transport {
       return new NullTransport();
     case 'log':
       return new LogTransport();
+    case 'preview':
+      return new PreviewTransport(config.sampleRate);
     case 'http':
     default:
       return new HttpTransport(config.ingestUrl, config.key, config.timeoutMs, config.onError);
@@ -61,9 +85,15 @@ function makeTransport(config: ResolvedConfig): Transport {
  * `options`. Returns a {@link Restlytics} handle to pass to the integrations.
  * A custom `transport` can be supplied (e.g. for tests).
  */
-export function init(options: RestlyticsOptions & { transport?: Transport } = {}): Restlytics {
-  const { transport: explicitTransport, ...rest } = options;
-  const config = resolveConfig(rest);
+export function init(
+  options: Omit<RestlyticsOptions, 'transport'> & { transport?: TransportName | Transport } = {},
+): Restlytics {
+  const { transport: transportOption, ...rest } = options;
+  const explicitTransport = typeof transportOption === 'string' ? undefined : transportOption;
+  const config = resolveConfig({
+    ...rest,
+    ...(typeof transportOption === 'string' ? { transport: transportOption as TransportName } : {}),
+  });
   const transport = explicitTransport ?? makeTransport(config);
   return new Restlytics(config, transport);
 }
@@ -124,7 +154,10 @@ export {
   HttpTransport,
   NullTransport,
   LogTransport,
+  PreviewTransport,
   type Transport,
+  type TransportDiagnostics,
+  type TelemetryPreview,
   type ErrorReporter,
 } from './transport.js';
 export {

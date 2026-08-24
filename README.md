@@ -15,8 +15,8 @@ call — and ships them to the restlytics ingestion service as **OTLP/JSON**.
 - **Outbound HTTP:** optional, via undici/`fetch` diagnostics channels
 - **Runtime:** Node 18+, ESM, TypeScript types included
 - **Safe by design:** fire-and-forget, gzipped, ~2s timeout, swallows all errors,
-  never blocks or throws into your app. No request/response bodies, no bind
-  values, sensitive query params and headers scrubbed.
+  never blocks or throws into your app. No bind values; every URL query value is
+  scrubbed; headers, bodies, and exception content are omitted.
 
 ## Install
 
@@ -153,16 +153,49 @@ double-count. `app = root_duration − union(all children)`, clamped ≥ 0.
 | `RESTLYTICS_TRANSPORT` | behaviour |
 |---|---|
 | `http` (default) | gzip + fire-and-forget POST to `{ingestUrl}/v1/traces` after the response is flushed |
+| `preview` | structured local-only report with the production payload, sampling rate, redaction policy, and byte sizes; never opens a socket and does not require a key |
 | `log` | pretty-print the OTLP payload (local debugging) |
 | `null` | no-op; records payloads in memory for tests |
+
+Before connecting production data, run a representative request with
+`RESTLYTICS_TRANSPORT=preview`. The report explicitly states
+`networkRequestMade: false`, shows the redacted payload, counts spans, and reports
+both uncompressed JSON and production gzip sizes. Sampling remains active, so use
+`RESTLYTICS_SAMPLE_RATE=1` for a deterministic one-request review.
+
+### Delivery reliability and shutdown
+
+The HTTP transport uses one worker and a fixed 64-batch queue. `send()` only
+enqueues; when saturated it drops the new batch instead of blocking or growing
+memory. There are no delivery retries. Timeouts, encoding failures, saturation,
+and sends after shutdown are observable without exposing payloads:
+
+```ts
+const snapshot = rl.diagnostics();
+console.log(snapshot?.droppedBatches, snapshot?.failedBatches);
+
+process.once('SIGTERM', async () => {
+  await rl.shutdown(2_000); // bounded graceful flush
+});
+```
 
 ## Development
 
 ```bash
 npm run build       # tsc -> dist/
 npm run typecheck   # tsc --noEmit
-npm test            # node:test runner (sql + intervals unit tests)
+npm test            # node:test runner (contract, sql, intervals, redaction)
 ```
+
+## Cross-language conformance
+
+CI pins [`restlytics/sdk-conformance@v1.1.0`](https://github.com/restlytics/sdk-conformance)
+and compares the vendored fixture before testing. The suite proves exact semantic OTLP output,
+W3C propagation, root sampling, source redaction, and error-status behavior shared by all seven SDKs.
+The release gate also boots a real Express application and sends its request telemetry over gzip HTTP
+to a deployed-compatible ingest server. It proves route templates, trace continuation, 202/503 handling,
+error status, and that the project key plus request secrets stay out of the payload. Express is beta-validated;
+NestJS remains preview until it passes the same real-app gate.
 
 ## License
 
