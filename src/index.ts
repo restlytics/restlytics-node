@@ -23,6 +23,8 @@ import {
   NullTransport,
   LogTransport,
   PreviewTransport,
+  ExporterTransport,
+  type Exporter,
   type Transport,
   type TransportDiagnostics,
 } from './transport.js';
@@ -98,20 +100,47 @@ export class Restlytics {
 
   /** Payload-free delivery counters for health checks and shutdown logs. */
   diagnostics(): TransportDiagnostics | undefined {
-    return this.transport.diagnostics?.();
+    try {
+      return this.transport.diagnostics?.();
+    } catch (error) {
+      try {
+        this.config.onError?.('restlytics: transport diagnostics failed', error);
+      } catch {
+        // Error reporting must preserve the never-throw guarantee too.
+      }
+      return undefined;
+    }
   }
 
   /** Wait for accepted telemetry without closing the SDK. */
   async flush(timeoutMs = 2000): Promise<boolean> {
-    this.logger.flush();
-    return (await this.transport.flush?.(timeoutMs)) ?? true;
+    try {
+      this.logger.flush();
+      return (await this.transport.flush?.(timeoutMs)) ?? true;
+    } catch (error) {
+      try {
+        this.config.onError?.('restlytics: transport flush failed', error);
+      } catch {
+        // Error reporting must preserve the never-throw guarantee too.
+      }
+      return false;
+    }
   }
 
   /** Stop accepting telemetry and flush accepted work during process shutdown. */
   async shutdown(timeoutMs = 2000): Promise<boolean> {
-    this.logger.close();
-    this.tracer.setLogFlusher(undefined);
-    return (await this.transport.close?.(timeoutMs)) ?? true;
+    try {
+      this.logger.close();
+      this.tracer.setLogFlusher(undefined);
+      return (await this.transport.close?.(timeoutMs)) ?? true;
+    } catch (error) {
+      try {
+        this.config.onError?.('restlytics: transport shutdown failed', error);
+      } catch {
+        // Error reporting must preserve the never-throw guarantee too.
+      }
+      return false;
+    }
   }
 }
 
@@ -135,16 +164,23 @@ function makeTransport(config: ResolvedConfig): Transport {
  * `options`. Returns a {@link Restlytics} handle to pass to the integrations.
  * A custom `transport` can be supplied (e.g. for tests).
  */
-export function init(
-  options: Omit<RestlyticsOptions, 'transport'> & { transport?: TransportName | Transport } = {},
-): Restlytics {
-  const { transport: transportOption, ...rest } = options;
+export interface InitOptions extends Omit<RestlyticsOptions, 'transport'> {
+  /** Built-in mode or legacy custom transport. Prefer `exporter` for new integrations. */
+  transport?: TransportName | Transport;
+  /** Provider-neutral custom destination, protected by the SDK's never-throw boundary. */
+  exporter?: Exporter;
+}
+
+export function init(options: InitOptions = {}): Restlytics {
+  const { transport: transportOption, exporter, ...rest } = options;
   const explicitTransport = typeof transportOption === 'string' ? undefined : transportOption;
   const config = resolveConfig({
     ...rest,
     ...(typeof transportOption === 'string' ? { transport: transportOption as TransportName } : {}),
   });
-  const transport = explicitTransport ?? makeTransport(config);
+  const transport = exporter
+    ? new ExporterTransport(exporter, config.onError)
+    : explicitTransport ?? makeTransport(config);
   return new Restlytics(config, transport);
 }
 
@@ -205,6 +241,8 @@ export {
   NullTransport,
   LogTransport,
   PreviewTransport,
+  ExporterTransport,
+  type Exporter,
   type Transport,
   type TransportDiagnostics,
   type TelemetryPreview,

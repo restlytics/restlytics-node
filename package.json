@@ -34,6 +34,10 @@
     "./logs": {
       "types": "./dist/logs.d.ts",
       "import": "./dist/logs.js"
+    },
+    "./transport": {
+      "types": "./dist/transport.d.ts",
+      "import": "./dist/transport.js"
     }
   },
   "files": [

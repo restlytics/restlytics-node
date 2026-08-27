@@ -272,6 +272,34 @@ Before connecting production data, run a representative request with
 both uncompressed JSON and production gzip sizes. Sampling remains active, so use
 `RESTLYTICS_SAMPLE_RATE=1` for a deterministic one-request review.
 
+### Custom exporters
+
+Use the provider-neutral `exporter` option when a design partner needs to route
+telemetry through its own collector, queue, or test harness:
+
+```ts
+import { init, type Exporter } from '@restlytics/node';
+
+const exporter: Exporter = {
+  exportTraces: (otlpRequest) => collector.enqueue('traces', otlpRequest),
+  exportLogs: (otlpRequest) => collector.enqueue('logs', otlpRequest),
+  flush: (timeoutMs) => collector.flush(timeoutMs),
+  shutdown: (timeoutMs) => collector.shutdown(timeoutMs),
+};
+
+const rl = init({ exporter, logs: true });
+```
+
+Both callbacks receive the same production-shaped, source-redacted OTLP/JSON
+objects used by the built-in HTTP transport. The SDK key and resolved tenant
+identity are never passed to an exporter or added to either payload. Exporter
+callbacks may be synchronous or return a promise; thrown errors, rejected
+promises, and lifecycle timeouts are contained and reported through `onError`.
+`exportLogs` is optional for compatibility with trace-only exporters. Keep the
+callback bounded (normally enqueue locally) and use `flush`/`shutdown` for
+graceful process termination. The older `transport` object option remains
+supported for compatibility; new provider integrations should use `exporter`.
+
 ### Delivery reliability and shutdown
 
 The HTTP transport uses one worker and a shared fixed 64-batch queue. Trace and

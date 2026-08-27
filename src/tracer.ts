@@ -165,7 +165,11 @@ export class RequestTrace {
       transport.send(payload);
     } catch (err) {
       // Telemetry must never throw into the host application.
-      this.config.onError?.('restlytics: finish failed', err);
+      try {
+        this.config.onError?.('restlytics: finish failed', err);
+      } catch {
+        // Error reporting must preserve the never-throw guarantee too.
+      }
     }
   }
 

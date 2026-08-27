@@ -25,6 +25,21 @@ export interface Transport {
   diagnostics?(): TransportDiagnostics;
 }
 
+/**
+ * Provider-neutral custom telemetry destination.
+ *
+ * Exporters receive the same source-redacted OTLP/JSON objects as the built-in
+ * HTTP transport. The SDK observes asynchronous results and isolates every
+ * callback so exporter failures never reach the host application.
+ */
+export interface Exporter {
+  exportTraces(payload: ExportTraceServiceRequest): void | Promise<void>;
+  /** Optional so trace-only exporters remain valid when native logs are disabled. */
+  exportLogs?(payload: ExportLogsServiceRequest): void | Promise<void>;
+  flush?(timeoutMs?: number): void | boolean | Promise<void | boolean>;
+  shutdown?(timeoutMs?: number): void | boolean | Promise<void | boolean>;
+}
+
 export interface TransportDiagnostics {
   readonly acceptedBatches: number;
   readonly deliveredBatches: number;
@@ -37,6 +52,157 @@ export interface TransportDiagnostics {
 }
 
 export type ErrorReporter = (message: string, error?: unknown) => void;
+
+/**
+ * Failure-isolating adapter used for customer-supplied exporters.
+ *
+ * The adapter owns no credentials and never adds tenant identity to a payload.
+ * It only forwards the already-built, already-redacted OTLP request object.
+ */
+export class ExporterTransport implements Transport {
+  private readonly pending = new Set<Promise<void>>();
+  private acceptedBatches = 0;
+  private deliveredBatches = 0;
+  private droppedBatches = 0;
+  private failedBatches = 0;
+  private isClosed = false;
+
+  constructor(
+    private readonly exporter: Exporter,
+    private readonly onError?: ErrorReporter,
+  ) {}
+
+  send(payload: ExportTraceServiceRequest): void {
+    this.exportBatch('traces', () => this.exporter.exportTraces(payload));
+  }
+
+  sendLogs(payload: ExportLogsServiceRequest): void {
+    if (!this.exporter.exportLogs) {
+      this.droppedBatches += 1;
+      report(this.onError, 'restlytics: log batch dropped because the exporter does not support logs');
+      return;
+    }
+    this.exportBatch('logs', () => this.exporter.exportLogs?.(payload));
+  }
+
+  diagnostics(): TransportDiagnostics {
+    return {
+      acceptedBatches: this.acceptedBatches,
+      deliveredBatches: this.deliveredBatches,
+      droppedBatches: this.droppedBatches,
+      failedBatches: this.failedBatches,
+      queuedBatches: 0,
+      inFlightBatches: this.pending.size,
+      queueCapacity: 0,
+      closed: this.isClosed,
+    };
+  }
+
+  async flush(timeoutMs = 2000): Promise<boolean> {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    const exportsSettled = await this.settlePending(deadline);
+    if (!exportsSettled) return false;
+    return this.invokeLifecycle('flush', this.exporter.flush, deadline);
+  }
+
+  async close(timeoutMs = 2000): Promise<boolean> {
+    this.isClosed = true;
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    const exportsSettled = await this.settlePending(deadline);
+    const flushed = exportsSettled
+      ? await this.invokeLifecycle('flush', this.exporter.flush, deadline)
+      : false;
+    const shutDown = await this.invokeLifecycle('shutdown', this.exporter.shutdown, deadline);
+    return exportsSettled && flushed && shutDown;
+  }
+
+  private exportBatch(signal: TelemetryBatch['signal'], operation: () => void | Promise<void>): void {
+    if (this.isClosed) {
+      this.droppedBatches += 1;
+      report(this.onError, `restlytics: ${signal} batch dropped because the exporter is closed`);
+      return;
+    }
+
+    this.acceptedBatches += 1;
+    try {
+      const result = operation();
+      if (isPromiseLike(result)) {
+        let tracked: Promise<void>;
+        tracked = Promise.resolve(result).then(
+          () => {
+            this.deliveredBatches += 1;
+            this.pending.delete(tracked);
+          },
+          (error: unknown) => {
+            this.failedBatches += 1;
+            this.pending.delete(tracked);
+            report(this.onError, `restlytics: custom ${signal} export failed`, error);
+          },
+        );
+        this.pending.add(tracked);
+      } else {
+        this.deliveredBatches += 1;
+      }
+    } catch (error) {
+      this.failedBatches += 1;
+      report(this.onError, `restlytics: custom ${signal} export failed`, error);
+    }
+  }
+
+  private async settlePending(deadline: number): Promise<boolean> {
+    while (this.pending.size > 0) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      const settled = await bounded(Promise.allSettled([...this.pending]).then(() => true), remaining);
+      if (!settled) return false;
+    }
+    return true;
+  }
+
+  private async invokeLifecycle(
+    name: 'flush' | 'shutdown',
+    operation: ((timeoutMs?: number) => void | boolean | Promise<void | boolean>) | undefined,
+    deadline: number,
+  ): Promise<boolean> {
+    if (!operation) return true;
+    const remaining = Math.max(0, deadline - Date.now());
+    try {
+      const outcome = await bounded(
+        Promise.resolve(operation.call(this.exporter, remaining)).then((value) => value !== false),
+        remaining,
+      );
+      if (outcome) return true;
+      report(this.onError, `restlytics: custom exporter ${name} timed out or returned false`);
+      return false;
+    } catch (error) {
+      report(this.onError, `restlytics: custom exporter ${name} failed`, error);
+      return false;
+    }
+  }
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<void> {
+  return (
+    (typeof value === 'object' || typeof value === 'function') &&
+    value !== null &&
+    typeof (value as PromiseLike<void>).then === 'function'
+  );
+}
+
+async function bounded(operation: Promise<boolean>, timeoutMs: number): Promise<boolean> {
+  if (timeoutMs <= 0) return false;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /** A local-only, structured description of a production-shaped trace batch. */
 export interface TelemetryPreview {
