@@ -22,6 +22,15 @@ call — plus opt-in, source-redacted application logs, and ships both signals a
 
 ## Install
 
+> [!IMPORTANT]
+> **Not yet published to npm.** `@restlytics/node` returns 404 today — publication is tracked in
+> [restlytics/app#232](https://github.com/restlytics/app/issues/232). Until it lands, install
+> directly from this repository:
+>
+> ```bash
+> npm install github:restlytics/restlytics-node#v0.5.0
+> ```
+
 ```bash
 npm install @restlytics/node
 # optional peers — install only what you use:
