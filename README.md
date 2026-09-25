@@ -154,8 +154,9 @@ import { instrumentOutboundHttp } from '@restlytics/node';
 instrumentOutboundHttp(rl); // best-effort: global fetch() / undici
 ```
 
-Records an HTTP CLIENT span per outbound call with the query string of `url.full`
-redacted. Best-effort — silently does nothing if the channels aren't available.
+Records an HTTP CLIENT span per outbound call, injects its W3C `traceparent`
+(including `flags=00` for unsampled traces), and redacts the query string of
+`url.full`. Best-effort — silently does nothing if the channels aren't available.
 
 ## Trace-correlated logs (opt-in)
 

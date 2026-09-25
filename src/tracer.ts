@@ -58,6 +58,26 @@ export class RequestTrace {
     return this.correlationSpanId;
   }
 
+  /**
+   * Mint the CLIENT SpanContext used for outbound propagation. A non-recording
+   * (unsampled) trace still propagates with flags=00; when sampled, the returned
+   * span uses the exact id placed in traceparent so the downstream SERVER span
+   * is correctly parented to the local CLIENT span.
+   */
+  startPropagatedChild(
+    name: string,
+    category: SpanCategory,
+    kind: number = SpanKind.CLIENT,
+  ): { traceparent: string; span: Span | null } | null {
+    if (this.correlationSpanId === undefined) return null;
+
+    const childSpanId = Ids.spanId();
+    return {
+      traceparent: Ids.formatTraceparent(this.traceId, childSpanId, this.sampled),
+      span: this.startChild(name, category, kind, childSpanId),
+    };
+  }
+
   /** Open the root SERVER span. Called once at request start. */
   openRoot(
     name: string,
