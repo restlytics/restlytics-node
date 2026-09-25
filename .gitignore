@@ -6,4 +6,14 @@ npm-debug.log*
 *.log
 coverage/
 .env
+.env.*
+!.env.example
 .env.local
+.pnpm-store/
+.turbo/
+.vite/
+test-results/
+.idea/
+.vscode/
+.codex/
+.claude/
